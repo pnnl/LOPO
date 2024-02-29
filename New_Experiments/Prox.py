@@ -272,6 +272,121 @@ class SecondOrderObjectiveConstraintComposition(torch.nn.Module):
 
 
 
+
+
+
+class SecondOrderObjectiveConstraintCompositionFixedH(torch.nn.Module):
+    '''
+    Computes an approximation of the prox operator of the sum
+    f(x) + i_{ x : F(x) = 0 }
+    where F: R^{n}->R^{m}, and m <= n , and is assumed to be differentiable everywhere
+          i_{} is the indicator function
+          f: R^{n}-> R is scalar valued and assumed to be twice differentiable everywhere
+    For a given x the prox operator is computed for the approximation
+    f(x) + grad_f(x)^T(y - x) + (y-x)^T H_f(x) (y-x) + i_{ y: F(x) + J_F(x)*(y - x) = 0 }
+    with grad_f(x) the gradient of f at x, H_f(x) the hessian of f at x, and  J_F(x) the Jacobian of F at x
+    '''
+    def __init__(self,f,F,metric,JF_fixed = False,n_dim = None, parm_dim = None,gamma = None):
+        '''
+        :param f: (functorch compatible function) a parameterized function f with input of the form (x,parms) where parms is a tensor that matches the batch of x, and has last dim parm features.
+                  f is defined unbatched, the method will call vmap, to "raise" f to batch dim
+
+        :param F:(functorch compatible function) a parameterized function F with input of the form (x, parms) where parms is a tensor that matches the batch of x, and has last dim parm features.
+                  F is defined unbatched, the method will call vmap, to "raise" f to batch dim
+
+        :param JF_fixed: (Bool) Indicates if the Jacobian of F should be computed at each iteration. Default is False, if True Jacobian of F will be precomputed at x=0, parms = 0
+        :param n_dim: (int) the dimension of x for precomputing Jacobian
+        :param parm_dim: (int) the dimension of parms for precomputing Jacobian
+        '''
+        super().__init__()
+        self.f = vmap(f)
+        self.f_grad = vmap(grad(f,argnums = 0))
+        self.H_vec = vmap(hessian(f,argnums = 0))
+        self.F = vmap(F)
+        self.JF = vmap(jacrev(F,argnums = 0))
+        if gamma !=None:
+            self.gamma = gamma
+        else:
+            self.gamma = 2.0
+        self.metric = metric
+        self.JF_fixed = JF_fixed
+        if self.JF_fixed == True:
+            jx = torch.zeros((1,n_dim),dtype = torch.float32)
+            jp = torch.zeros((1,parm_dim),dtype = torch.float32)
+            JFx = self.JF(jx,jp)
+            Qc, Rc  = torch.linalg.qr(torch.transpose(JFx,1,2),mode = 'complete')
+            null_dim = Qc.shape[-1] - Rc.shape[-1]
+            Rr = Rc[:,:-null_dim,:]
+            Qr = Qc[:,:,:-null_dim]
+            Qn = Qc[:,:,-null_dim:]
+            self.JFx = JFx
+            self.Qr = Qr
+            self.Qn = Qn
+            self.Rr = Rr
+    def prefactor(self,x,parms):
+        batch_size = x.shape[0]
+        Qn = torch.tile(self.Qn,(batch_size,1,1))
+        # Compute the Hessian of f
+        Hf = self.H_vec(x,parms)
+        ### Compute the gradient step and Projection Operation
+        Pm = vmap(self.metric)(x,parms)
+        Md =  (self.gamma/2)*Pm + Hf
+        QTMdQ = torch.bmm(torch.bmm(torch.transpose(Qn,1,2),Md),Qn)
+        Lcho = torch.linalg.cholesky(QTMdQ)
+        return Lcho, Md
+
+    def forward(self, x, parms, Lcho, Md):
+        #print(self.metric.P_d)
+        if self.JF_fixed == False:
+            with torch.no_grad():
+                JFx = self.JF(x,parms)
+                ### Take a QR decomposition of the Jacobian
+                Qc, Rc  = torch.linalg.qr(torch.transpose(JFx,1,2),mode = 'complete')
+                null_dim = Qc.shape[-1] - Rc.shape[-1]
+                Rr = Rc[:,:-null_dim,:]
+                Qr = Qc[:,:,:-null_dim]
+                Qn = Qc[:,:,-null_dim:]
+        if self.JF_fixed == True:
+            batch_size = x.shape[0]
+            JFx = torch.tile(self.JFx,(batch_size,1,1))
+            Qr = torch.tile(self.Qr,(batch_size,1,1))
+            Qn = torch.tile(self.Qn,(batch_size,1,1))
+            Rr = torch.tile(self.Rr,(batch_size,1,1))
+        Fx = self.F(x,parms)
+        # Compute the RHS
+        Fx_mat = torch.unsqueeze(Fx,dim = -1)
+        x_mat = torch.unsqueeze(x,dim = -1)
+        b = -Fx_mat + torch.bmm(JFx,x_mat)
+        #### Find a solution to RHS
+        Rr_T = torch.transpose(Rr,1,2)
+        zeta_r = torch.linalg.solve_triangular(Rr_T,b,upper=False,left = True)
+        zeta = torch.bmm(Qr,zeta_r)
+        # Compute the gradient of f
+        fg = torch.unsqueeze(self.f_grad(x,parms),dim = -1)
+        # Compute the Hessian of f
+        #Hf = self.H_vec(x,parms)
+        ### Compute the gradient step and Projection Operation
+        #Pm = vmap(self.metric)(x,parms)
+        #Md =  (self.gamma/2)*Pm + Hf
+        #QTMdQ = torch.bmm(torch.bmm(torch.transpose(Qn,1,2),Md),Qn)
+        zq = torch.bmm(Md,x_mat - zeta) - (self.gamma/2)*fg
+        zq = torch.bmm(torch.transpose(Qn,1,2),zq)
+        
+        zq = torch.linalg.solve_triangular(Lcho,zq,upper = False, left = True)
+        zq = torch.linalg.solve_triangular(torch.transpose(Lcho,1,2),zq,upper = True, left = True)
+        
+        #zq = torch.linalg.solve(QTMdQ,zq)
+        zq = torch.bmm(Qn,zq)
+        x_new =  zq + zeta
+        return torch.squeeze(x_new,dim = -1)
+
+
+
+
+
+
+
+
 # An adaptation of SecondOrderObjectiveConstraintComposition,
 # to the special case where the optimization problem is already a QP
 # The main point will be to take advantage of opportunities to increase efficiency,
