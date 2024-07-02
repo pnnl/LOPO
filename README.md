@@ -1,26 +1,12 @@
-# Douglas Rachford Solvers
-This contains an implementation of Douglas Rachford for solving general optimization problems by first and second order approximations. In addition it contains a parameteric implementation of DR that learns metrics for proximal operators to speed up DR convergence in the parameteric setting 
+# Learning to Optimize With Proximal Operators 
+This repo contains implementations of two operator splitting solvers Douglas Rachford (DR) and Alternating Direction Method of Multipliers (ADMM) for solution of general optimization problems by second order approximations. In addition it contains a parameteric implementation to learn metrics for proximal operators to speed up convergence in the parameteric setting. This is the work presented in this paper https://arxiv.org/abs/2404.00882 . Note though that in the implementation here metric learning is performed in an unsupervised fashion for ease of use.
 
 
 # Contents
-This Repo contains several implementations:
+This Repo contains several examples:
 
-1. DRcorrection: This is a nonparameteric implementation of the Douglas Rachford algorithm
-2. ParaMetricDR: This containtains a metric learning implementation of Douglas Rachford for parametric problems.
+1. pQp example: This is an example highlighting the effect of metric learning on a toy quadratic programming problem
+2. porfolio example: This example demonstrates performance on a larger quadratic problem
+3. Quadcopter example: Shows application of the methodology for a model predictive control application
 
-## DR correction
-This folder contains:
-1. DRSolver.py: The implementation of Douglas Rachford for solution correction
-2. pQP_Example.py: An example implementation on a parameteric quadratic programming problem
-3. RosenBrock_Example.py: An example implementation on a nonlinear, nonconvex programming problem
-
-
-## ParaMetricDR
-This folder contains:
-1. ParaMetricDRSolver.py: The implementation of a metric learning Douglas Rachford for solution correction
-2. pQP_Example.py: An example implementation on a parameteric quadratic programming problem
-3. RosenBrock_Example.py: An example implementation on a nonlinear, nonconvex programming problem
-
-
-
-
+4. LOPO: Contains the relevant code that implements the solver methods.
